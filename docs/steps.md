@@ -2,68 +2,60 @@
 
 1) Buat instance EC2 (Ubuntu 22.04 LTS)
 - t2.medium / t3.medium (RAM ≥4 GB), storage ≥20 GB.
-- Security Group inbound minimal:
-  - TCP 22 dari IP Anda (SSH)
-  - TCP 30080 (akses NodePort aplikasi) — atau 443 jika Anda pakai ingress TLS sendiri.
+- Security Group inbound minimal: 22/tcp (SSH), 80/tcp (HTTP/ACME), 443/tcp (HTTPS).
 
 2) SSH ke server
 - ssh -i <KEY.pem> ubuntu@<EC2_PUBLIC_IP>
 
-## B. Setup Kubernetes (Single Node) di EC2
-
-1) Upload/clone source code ke EC2:
-- git clone <repo-anda> && cd circle-k8s-passwordless
-- atau upload ZIP lalu unzip.
-
-2) Install cluster (kubeadm single-node) dan nerdctl:
+## B. Install kubectl, Docker, dan Minikube
 ```bash
-chmod +x scripts/*.sh
-./scripts/01_setup_k8s.sh
-./scripts/02_install_nerdctl.sh
+sudo apt update
+sudo apt -y install curl ca-certificates apt-transport-https docker.io
+sudo usermod -aG docker ubuntu
+newgrp docker
+
+curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+minikube start --driver=docker --cpus=2 --memory=3000
+kubectl get nodes
 ```
 
-Pastikan `kubectl get nodes` status Ready.
-
-## C. Build Docker image ke containerd (namespace k8s.io)
+## C. Siapkan Source Code
 ```bash
-./scripts/03_build_image.sh
-sudo nerdctl --namespace k8s.io images | grep circle-app
+git clone https://github.com/ryuun1corn/kowan-circle-k8s.git
+cd kowan-circle-k8s/circle-k8s-passwordless
 ```
 
-## D. Set konfigurasi passkey/HTTPS
-- Edit `k8s/app-deployment.yaml` env vars:
-  - `RP_ID`: domain yang dipakai untuk akses (contoh: circle.example.com)
-  - `ORIGIN`: `https://<domain-anda>`
-  - `SESSION_SECRET`: string acak
-  - `DB_PATH`: default `/data/app.db` (pakai volume `emptyDir`; ganti ke PVC jika perlu persist)
-- Pastikan akses lewat HTTPS dengan origin yang match rp_id/origin (passkey/WebAuthn butuh secure context). Gunakan ingress + TLS atau reverse proxy TLS di depan NodePort 30080.
-
-## E. Deploy ke Kubernetes
+## D. Build Image ke Docker Minikube
 ```bash
-./scripts/05_deploy.sh
-kubectl get pods
-kubectl get svc circle-app-svc -o wide   # NodePort 30080
+eval $(minikube -p minikube docker-env)
+docker build -t circle-app:1.0 ./app
+docker images | grep circle-app
 ```
 
-## F. Akses aplikasi & ambil screenshot
-1) Buka aplikasi via HTTPS sesuai ORIGIN/RP_ID (atau https://<EC2_PUBLIC_IP>:30080 bila Anda sudah pasang TLS terminator di depan NodePort).
-2) Register passkey (input username → pilih metode biometrik/device).
-3) Login passkey → diarahkan ke form kalkulator.
-4) Isi radius, klik Hitung.
-5) Simpan screenshot:
-   - docs/screenshots/01-home.png (halaman login/register passkey)
-   - docs/screenshots/02-result.png (hasil kalkulator)
-6) Lampirkan bukti:
+## E. Konfigurasi WebAuthn (RP_ID/ORIGIN/SESSION_SECRET)
+- Edit `k8s/app-deployment.yaml`:
+  - `RP_ID = yuda-kowan-circle.duckdns.org`
+  - `ORIGIN = https://yuda-kowan-circle.duckdns.org`
+  - `SESSION_SECRET = <random kuat>`
+  - `DB_PATH = /data/app.db`
+
+## F. Deploy ke Kubernetes (Minikube)
 ```bash
+kubectl apply -f k8s/
 kubectl get pods
 kubectl get svc
 ```
 
-### HTTPS (Caddy + Let’s Encrypt) & Port-Forward Persisten
+## G. HTTPS (Caddy + Let’s Encrypt) & Port-Forward
 1) Install Caddy:
 ```bash
 sudo apt update
-sudo apt install -y caddy
+sudo apt -y install caddy
 ```
 2) Konfigurasi `/etc/caddy/Caddyfile`:
 ```caddy
@@ -81,10 +73,10 @@ sudo systemctl status caddy --no-pager
 kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
 curl -I http://127.0.0.1:30080/healthz
 ```
-5) Buat systemd agar port-forward jalan terus:
+5) Systemd agar port-forward jalan terus:
 ```bash
 mkdir -p ~/.kube
-cp -f /etc/kubernetes/admin.conf ~/.kube/config
+minikube kubectl -- config view --flatten > ~/.kube/config
 chmod 600 ~/.kube/config
 
 sudo tee /etc/systemd/system/circle-portforward.service >/dev/null <<'EOF'
@@ -95,7 +87,7 @@ After=network.target
 [Service]
 User=ubuntu
 Environment=KUBECONFIG=/home/ubuntu/.kube/config
-ExecStart=/usr/bin/kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
+ExecStart=/usr/local/bin/kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
 Restart=always
 RestartSec=3
 
@@ -106,4 +98,17 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now circle-portforward
 systemctl status circle-portforward --no-pager
+```
+
+## H. Akses & Screenshot
+1) Akses: `https://yuda-kowan-circle.duckdns.org`
+2) Register passkey → login → gunakan kalkulator (radius → luas & keliling)
+3) Simpan screenshot:
+   - docs/screenshots/01-home.png (login/register passkey)
+   - docs/screenshots/02-result.png (hasil kalkulator)
+4) Lampirkan bukti:
+```bash
+kubectl get pods
+kubectl get svc
+kubectl get nodes
 ```
