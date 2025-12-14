@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Circle Calculator Passwordless</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@9.0.1/dist/bundle/index.umd.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Hitung Luas & Keliling Lingkaran</h1>
+      <p class="sub">Akses aplikasi dilindungi <b>passwordless</b> (passkey/WebAuthn). Login dulu dengan passkey, lalu hitung.</p>
+
+      {% if not user %}
+      <label for="username">Username</label>
+      <input id="username" placeholder="misal: budi" />
+      <div class="row" style="margin-top:10px;">
+        <button id="registerBtn" type="button">Daftar Passkey</button>
+        <button id="loginBtn" type="button" class="secondary">Login Passkey</button>
+      </div>
+      <div id="status" class="status"></div>
+      {% else %}
+      <p class="sub">Halo, <b>{{ user.username }}</b>. Kamu sudah login.</p>
+      <form method="POST" action="/calc">
+        <label for="radius">Radius</label>
+        <input id="radius" name="radius" placeholder="contoh: 7" value="{{ radius|default('') }}" required />
+        <div class="row" style="margin-top:12px;">
+          <button type="submit">Hitung</button>
+          <a href="/logout" style="text-decoration:none; flex:1;"><button type="button" class="secondary" style="width:100%;">Logout</button></a>
+        </div>
+      </form>
+      {% endif %}
+
+      {% if error %}
+      <div class="err">{{ error }}</div>
+      {% endif %}
+
+      {% if result %}
+      <div class="grid">
+        <div class="box">
+          <div class="k">Radius</div>
+          <div class="v">{{ "%.4f"|format(result.radius) }}</div>
+        </div>
+        <div class="box">
+          <div class="k">Rumus</div>
+          <div class="v"><code>pi = 3.141592...</code></div>
+        </div>
+        <div class="box">
+          <div class="k">Luas (pi * r^2)</div>
+          <div class="v">{{ "%.6f"|format(result.area) }}</div>
+        </div>
+        <div class="box">
+          <div class="k">Keliling (2 * pi * r)</div>
+          <div class="v">{{ "%.6f"|format(result.circumference) }}</div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="foot">
+        Endpoint health check: <code>/healthz</code>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/main.js"></script>
+</body>
+</html>

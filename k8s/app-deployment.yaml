@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: circle-app
+  labels:
+    app: circle-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: circle-app
+  template:
+    metadata:
+      labels:
+        app: circle-app
+    spec:
+      containers:
+        - name: circle-app
+          image: circle-app:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RP_ID
+              value: "localhost"
+            - name: ORIGIN
+              value: "https://localhost:30443"
+            - name: SESSION_SECRET
+              value: "change-me"
+            - name: DB_PATH
+              value: "/data/app.db"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+      volumes:
+        - name: data
+          emptyDir: {}
