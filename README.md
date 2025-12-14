@@ -1,111 +1,155 @@
-# Circle Calculator + Passkey on Kubernetes
+# Laporan Tugas: Aplikasi Hitung Luas & Keliling Lingkaran di Kubernetes dengan Passwordless (Passkey)
 
-Satu aplikasi Flask yang menghitung **luas** dan **keliling** lingkaran dengan akses **passwordless (passkey/WebAuthn)**, dijalankan di Kubernetes (single-node EC2). Akses tetap di belakang TLS (siapkan domain/HTTPS sendiri; skrip memudahkan build/deploy lokal cluster).
+## 1. Deskripsi Tugas
+Membuat aplikasi web untuk menghitung **luas** dan **keliling** lingkaran, dideploy di **Kubernetes**, dengan akses **passwordless** menggunakan **Passkey/WebAuthn**.
 
-> Catatan: versi ini tidak lagi menggunakan mTLS; autentikasi langsung di aplikasi via passkey/WebAuthn dengan session cookie. RP/Origin wajib disesuaikan dengan domain HTTPS Anda.
+## 2. Ringkasan Solusi
+- **Backend**: Flask + Gunicorn, SQLite untuk user/credential, session-based gating (kalkulator hanya bisa diakses setelah login passkey).
+- **Passwordless**: WebAuthn/Passkey (register + login) dengan verifikasi challenge di server.
+- **Kubernetes**: Deployment + Service (NodePort 30080) di single-node cluster (kubeadm di EC2).
+- **HTTPS**: Caddy + Let’s Encrypt sebagai reverse proxy di host. `kubectl port-forward` menjembatani host → service (jalan sebagai systemd service).
 
-## 1) Prasyarat
-- EC2 Ubuntu 22.04 (t2.medium/t3.medium atau lebih)
-- Domain + HTTPS (disarankan, mis. via ingress + cert-manager atau reverse proxy TLS). Untuk testing lokal, bisa pakai self-signed + override `ORIGIN`.
-- Security Group: TCP 22 (SSH) + TCP 443/80 sesuai akses Anda.
+## 3. Arsitektur Singkat
+1. User buka `https://yuda-kowan-circle.duckdns.org`
+2. Caddy terminasi TLS (443) → reverse proxy ke `127.0.0.1:30080`
+3. Port 30080 disediakan oleh `kubectl port-forward` → `circle-app-svc` → Pod Flask (8080)
+4. Server memproses WebAuthn + kalkulator.
 
-## 2) Siapkan Kubernetes (kubeadm single node)
+Komponen: Flask/Gunicorn, SQLite, K8s Deployment/Service, Caddy TLS, port-forward kubectl.
+
+## 4. Langkah-Langkah
+
+### 4.1 Persiapan EC2
+- Ubuntu 22.04, 2 vCPU/4GB RAM, 20GB+ disk.
+- Security Group: 22/tcp (SSH), 80/tcp (HTTP for ACME), 443/tcp (HTTPS).
+- SSH: `ssh -i <key.pem> ubuntu@<EC2_PUBLIC_IP>`
+
+### 4.2 Domain (DuckDNS)
+- Buat subdomain, arahkan ke EC2 Public IP (contoh: `yuda-kowan-circle.duckdns.org`).
+
+### 4.3 Clone Source
 ```bash
+git clone https://github.com/ryuun1corn/kowan-circle-k8s.git
+cd kowan-circle-k8s/circle-k8s-passwordless
 chmod +x scripts/*.sh
+```
+
+### 4.4 Install Kubernetes (kubeadm) + nerdctl
+```bash
 ./scripts/01_setup_k8s.sh
 ./scripts/02_install_nerdctl.sh
+kubectl get nodes
+kubectl get pods -A
 ```
 
-## 3) Build image ke containerd
+### 4.5 Build image ke containerd
 ```bash
 ./scripts/03_build_image.sh
+sudo nerdctl --namespace k8s.io images | grep -i circle
 ```
 
-## 4) Deploy ke Kubernetes
-Set environment penting (RP/ORIGIN/SESSION_SECRET). Secara default deployment memakai env berikut (ubah via edit manifest sebelum apply):
-- `RP_ID`: domain Anda (contoh: circle.example.com)
-- `ORIGIN`: https://circle.example.com
-- `SESSION_SECRET`: ganti dengan string acak
+### 4.6 Konfigurasi WebAuthn (env)
+Edit `k8s/app-deployment.yaml`:
+- `RP_ID = yuda-kowan-circle.duckdns.org`
+- `ORIGIN = https://yuda-kowan-circle.duckdns.org`
+- `SESSION_SECRET = <random kuat>`
+- `DB_PATH = /data/app.db` (default)
 
-Lalu deploy:
+Generate secret:
+```bash
+python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+```
+
+### 4.7 Deploy ke Kubernetes
 ```bash
 ./scripts/05_deploy.sh
+kubectl get pods
+kubectl get svc   # pastikan circle-app-svc NodePort 30080
 ```
 
-Service aplikasi (tanpa ingress) diekspos sebagai NodePort `30080` (lihat `k8s/app-service.yaml`). Anda bisa menaruh ingress/TLS di depan sesuai kebutuhan.
+### 4.8 HTTPS dengan Caddy
+Install Caddy:
+```bash
+sudo apt update
+sudo apt install -y caddy
+```
+Konfigurasi `/etc/caddy/Caddyfile`:
+```caddy
+yuda-kowan-circle.duckdns.org {
+  reverse_proxy 127.0.0.1:30080
+}
+```
+Restart:
+```bash
+sudo systemctl restart caddy
+sudo systemctl status caddy --no-pager
+```
 
-## 5) Akses aplikasi (passwordless)
-1. Buka halaman root (pastikan lewat HTTPS sesuai ORIGIN/RP_ID).
-2. Daftar passkey (pilih username) → browser menampilkan dialog WebAuthn.
-3. Login passkey → diarahkan ke form kalkulator.
-4. Input radius → dapat luas dan keliling.
+### 4.9 Port-forward service K8s ke host
+```bash
+kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
+curl -I http://127.0.0.1:30080/healthz
+```
 
-## 6) Screenshot untuk laporan
-- `docs/screenshots/01-home.png` (halaman login/register/passkey)
+### 4.10 Port-forward persisten (systemd)
+```bash
+mkdir -p ~/.kube
+cp -f /etc/kubernetes/admin.conf ~/.kube/config
+chmod 600 ~/.kube/config
+
+sudo tee /etc/systemd/system/circle-portforward.service >/dev/null <<'EOF'
+[Unit]
+Description=Port-forward circle app to localhost:30080
+After=network.target
+
+[Service]
+User=ubuntu
+Environment=KUBECONFIG=/home/ubuntu/.kube/config
+ExecStart=/usr/bin/kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now circle-portforward
+systemctl status circle-portforward --no-pager
+```
+
+### 4.11 Pengujian
+1) Buka `https://yuda-kowan-circle.duckdns.org`  
+2) Register passkey → Login passkey  
+3) Gunakan kalkulator (radius → luas & keliling)
+
+## 5. Screenshot Wajib
+- `docs/screenshots/01-home.png` (halaman login/register passkey)
 - `docs/screenshots/02-result.png` (hasil kalkulator)
 
-## Cleanup
+## 6. Source Code Utama
+- `app/app.py` (WebAuthn register/login, session gating, kalkulator, SQLite)
+- `app/templates/index.html` (UI login + kalkulator)
+- `app/static/main.js` (WebAuthn browser flow)
+- `app/static/style.css` (UI)
+- `app/Dockerfile`, `app/requirements.txt`
+- `k8s/app-deployment.yaml`, `k8s/app-service.yaml`
+- (Host) `/etc/caddy/Caddyfile`, `/etc/systemd/system/circle-portforward.service`
+
+## 7. Bukti Deployment (opsional)
+Lampirkan output:
 ```bash
-./scripts/99_cleanup.sh
+kubectl get pods
+kubectl get svc
 ```
 
-## Pengembangan Lokal (quick test)
-- Jalankan tanpa HTTPS hanya di `localhost`:
-  ```bash
-  SESSION_SECRET=devsecret RP_ID=localhost ORIGIN=http://localhost:5000 SESSION_COOKIE_SECURE=false \\
-    flask --app app/app.py run
-  ```
-- Akses `http://localhost:5000`. WebAuthn hanya mengizinkan HTTP untuk `localhost`; gunakan HTTPS + domain untuk lingkungan lain.
-- Untuk produksi, jalankan via Gunicorn: `gunicorn -b 0.0.0.0:8080 app:app` (set env sama seperti di atas).
-
-## (Opsi) Deploy cepat dengan Minikube + kubectl
-Paling cocok untuk demo di satu VM (mis. EC2) dengan driver Docker.
-
-1. Install kubectl:
-   ```bash
-   sudo apt update
-   sudo apt -y install curl ca-certificates apt-transport-https
-   curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-   sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-   kubectl version --client
-   ```
-2. Install Minikube:
-   ```bash
-   curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-   sudo install minikube-linux-amd64 /usr/local/bin/minikube
-   minikube version
-   ```
-3. Install Docker (driver):
-   ```bash
-   sudo apt -y install docker.io
-   sudo usermod -aG docker $USER
-   newgrp docker
-   docker --version
-   ```
-4. Start Minikube:
-   ```bash
-   minikube start --driver=docker --cpus=2 --memory=3000
-   kubectl get nodes
-   ```
-5. Build image langsung ke Docker Minikube:
-   ```bash
-   eval $(minikube -p minikube docker-env)
-   docker build -t circle-app:1.0 ./app
-   ```
-6. Set env di `k8s/app-deployment.yaml` (RP_ID/ORIGIN/SESSION_SECRET).
-7. Deploy:
-   ```bash
-   kubectl apply -f k8s/
-   kubectl get pods
-   kubectl get svc circle-app-svc -o wide  # NodePort 30080
-   ```
-8. Pasang TLS/proxy di host (contoh Caddy di EC2) untuk origin HTTPS:
-   - `sudo apt -y install caddy`
-   - `/etc/caddy/Caddyfile`:
-     ```
-     your-domain.example.com {
-       reverse_proxy 127.0.0.1:30080
-     }
-     ```
-   - `sudo systemctl restart caddy`
-9. Akses `https://your-domain.example.com` (domain harus pointing ke EC2). Pastikan ORIGIN/RP_ID sesuai domain agar passkey/WebAuthn berjalan.
+## 8. Pengembangan Lokal (opsional)
+Hanya untuk localhost (HTTP diizinkan oleh WebAuthn):
+```bash
+SESSION_SECRET=devsecret RP_ID=localhost ORIGIN=http://localhost:5000 SESSION_COOKIE_SECURE=false \\
+  flask --app app/app.py run
+```
+Gunakan HTTPS + domain untuk lingkungan selain localhost. Untuk produksi: `gunicorn -b 0.0.0.0:8080 app:app` dengan env di atas.

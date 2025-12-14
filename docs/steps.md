@@ -53,47 +53,57 @@ kubectl get svc circle-app-svc -o wide   # NodePort 30080
 5) Simpan screenshot:
    - docs/screenshots/01-home.png (halaman login/register passkey)
    - docs/screenshots/02-result.png (hasil kalkulator)
+6) Lampirkan bukti:
+```bash
+kubectl get pods
+kubectl get svc
+```
 
-## (Opsi) Deploy dengan Minikube + kubectl (lebih ringkas)
-1) Install kubectl:
+### HTTPS (Caddy + Let’s Encrypt) & Port-Forward Persisten
+1) Install Caddy:
 ```bash
 sudo apt update
-sudo apt -y install curl ca-certificates apt-transport-https
-curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+sudo apt install -y caddy
 ```
-2) Install Minikube:
-```bash
-curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-sudo install minikube-linux-amd64 /usr/local/bin/minikube
-```
-3) Install Docker (driver):
-```bash
-sudo apt -y install docker.io
-sudo usermod -aG docker $USER
-newgrp docker
-```
-4) Start Minikube:
-```bash
-minikube start --driver=docker --cpus=2 --memory=3000
-kubectl get nodes
-```
-5) Build image ke Docker Minikube:
-```bash
-eval $(minikube -p minikube docker-env)
-docker build -t circle-app:1.0 ./app
-```
-6) Edit env di `k8s/app-deployment.yaml` (RP_ID/ORIGIN/SESSION_SECRET).
-7) Deploy:
-```bash
-kubectl apply -f k8s/
-kubectl get pods
-kubectl get svc circle-app-svc -o wide
-```
-8) Pasang TLS/proxy (contoh Caddy) di host dan arahkan domain ke 127.0.0.1:30080:
-```
-your-domain.example.com {
+2) Konfigurasi `/etc/caddy/Caddyfile`:
+```caddy
+yuda-kowan-circle.duckdns.org {
   reverse_proxy 127.0.0.1:30080
 }
 ```
-9) Akses `https://your-domain.example.com` (domain harus sesuai RP_ID/ORIGIN agar passkey jalan).
+3) Restart:
+```bash
+sudo systemctl restart caddy
+sudo systemctl status caddy --no-pager
+```
+4) Port-forward service ke host:
+```bash
+kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
+curl -I http://127.0.0.1:30080/healthz
+```
+5) Buat systemd agar port-forward jalan terus:
+```bash
+mkdir -p ~/.kube
+cp -f /etc/kubernetes/admin.conf ~/.kube/config
+chmod 600 ~/.kube/config
+
+sudo tee /etc/systemd/system/circle-portforward.service >/dev/null <<'EOF'
+[Unit]
+Description=Port-forward circle app to localhost:30080
+After=network.target
+
+[Service]
+User=ubuntu
+Environment=KUBECONFIG=/home/ubuntu/.kube/config
+ExecStart=/usr/bin/kubectl port-forward svc/circle-app-svc 30080:8080 --address 127.0.0.1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now circle-portforward
+systemctl status circle-portforward --no-pager
+```
