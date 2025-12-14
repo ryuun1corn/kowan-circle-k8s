@@ -48,3 +48,12 @@ Service aplikasi (tanpa ingress) diekspos sebagai NodePort `30080` (lihat `k8s/a
 ```bash
 ./scripts/99_cleanup.sh
 ```
+
+## Pengembangan Lokal (quick test)
+- Jalankan tanpa HTTPS hanya di `localhost`:
+  ```bash
+  SESSION_SECRET=devsecret RP_ID=localhost ORIGIN=http://localhost:5000 SESSION_COOKIE_SECURE=false \\
+    flask --app app/app.py run
+  ```
+- Akses `http://localhost:5000`. WebAuthn hanya mengizinkan HTTP untuk `localhost`; gunakan HTTPS + domain untuk lingkungan lain.
+- Untuk produksi, jalankan via Gunicorn: `gunicorn -b 0.0.0.0:8080 app:app` (set env sama seperti di atas).

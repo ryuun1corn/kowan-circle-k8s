@@ -1,0 +1,19 @@
+# Python / Flask
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Local data
+*.db
+data/
+app_data/
+certs/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
