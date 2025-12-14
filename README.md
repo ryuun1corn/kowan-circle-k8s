@@ -57,3 +57,55 @@ Service aplikasi (tanpa ingress) diekspos sebagai NodePort `30080` (lihat `k8s/a
   ```
 - Akses `http://localhost:5000`. WebAuthn hanya mengizinkan HTTP untuk `localhost`; gunakan HTTPS + domain untuk lingkungan lain.
 - Untuk produksi, jalankan via Gunicorn: `gunicorn -b 0.0.0.0:8080 app:app` (set env sama seperti di atas).
+
+## (Opsi) Deploy cepat dengan Minikube + kubectl
+Paling cocok untuk demo di satu VM (mis. EC2) dengan driver Docker.
+
+1. Install kubectl:
+   ```bash
+   sudo apt update
+   sudo apt -y install curl ca-certificates apt-transport-https
+   curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+   sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+   kubectl version --client
+   ```
+2. Install Minikube:
+   ```bash
+   curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+   sudo install minikube-linux-amd64 /usr/local/bin/minikube
+   minikube version
+   ```
+3. Install Docker (driver):
+   ```bash
+   sudo apt -y install docker.io
+   sudo usermod -aG docker $USER
+   newgrp docker
+   docker --version
+   ```
+4. Start Minikube:
+   ```bash
+   minikube start --driver=docker --cpus=2 --memory=3000
+   kubectl get nodes
+   ```
+5. Build image langsung ke Docker Minikube:
+   ```bash
+   eval $(minikube -p minikube docker-env)
+   docker build -t circle-app:1.0 ./app
+   ```
+6. Set env di `k8s/app-deployment.yaml` (RP_ID/ORIGIN/SESSION_SECRET).
+7. Deploy:
+   ```bash
+   kubectl apply -f k8s/
+   kubectl get pods
+   kubectl get svc circle-app-svc -o wide  # NodePort 30080
+   ```
+8. Pasang TLS/proxy di host (contoh Caddy di EC2) untuk origin HTTPS:
+   - `sudo apt -y install caddy`
+   - `/etc/caddy/Caddyfile`:
+     ```
+     your-domain.example.com {
+       reverse_proxy 127.0.0.1:30080
+     }
+     ```
+   - `sudo systemctl restart caddy`
+9. Akses `https://your-domain.example.com` (domain harus pointing ke EC2). Pastikan ORIGIN/RP_ID sesuai domain agar passkey/WebAuthn berjalan.
